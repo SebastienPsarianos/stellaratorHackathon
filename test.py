@@ -26,12 +26,17 @@ from desc.continuation import solve_continuation_automatic
 from desc.equilibrium import Equilibrium
 from desc.geometry import FourierRZToroidalSurface
 from desc.optimize import Optimizer
-from desc.plotting import plot_boozer_surface, plot_3d
+from desc.plotting import plot_boozer_surface, plot_3d, plot_boundary
 from desc.objectives import (
-    ObjectiveFunction, QuasisymmetryTwoTerm, AspectRatio, ForceBalance, FixBoundaryR, FixBoundaryZ, FixPressure, FixCurrent, FixPsi)
+    ObjectiveFunction, QuasisymmetryTwoTerm, AspectRatio, ForceBalance,
+    FixBoundaryR, FixBoundaryZ, FixPressure, FixCurrent, FixPsi)
 
 from desc.plotting import LinearGrid
 import numpy as np
+
+NFPs = [2, 3, 4, 5, 6]
+scalingFactor = [1, 2, 3, 4, 5, 6]
+aspectRatio = []
 
 
 surf = FourierRZToroidalSurface(
@@ -39,12 +44,17 @@ surf = FourierRZToroidalSurface(
     Z_lmn=[-0.125, -0.1],
     modes_R=[[0, 0], [1, 0], [0, 1]],
     modes_Z=[[-1, 0], [0, -1]],
-    NFP=4,
+    M=20,
+    N=20,
+    sym=True,
+    NFP=4
 )
 
 # create initial equilibrium. Psi chosen to give B ~ 1 T. Could also give profiles here,
 # default is zero pressure and zero current
-eq = Equilibrium(M=4, N=4, Psi=0.04, surface=surf)
+eq = Equilibrium(M=5, N=5, Psi=0.04, surface=surf)
+fig, ax = plot_boundary(eq)
+fig.savefig("TEST.png")
 
 grid = LinearGrid(
     rho=0.8,
@@ -58,8 +68,10 @@ fig.write_image("preoptimization.png")
 
 # this is usually all you need to solve a fixed boundary equilibrium
 eq0 = solve_continuation_automatic(eq, verbose=0)[-1]
-fig = plot_3d(eq0, "|F|", log=True, grid=grid)
+fig = plot_3d(eq0, "|F|_normalized", log=True, grid=grid)
 fig.write_image("postptimization.png")
+
+exit()
 
 
 def run_qh_optimization(k, eq):
@@ -69,17 +81,19 @@ def run_qh_optimization(k, eq):
         sym=True
     )
 
-    objective = ObjectiveFunction(
-        QuasisymmetryTwoTerm(eq=eq, helicity=(1, eq.NFP), grid=grid),
-        AspectRatio(eq=eq, target=8, weight=100)
+    objective = ObjectiveFunction((
+        QuasisymmetryTwoTerm(eq=eq, helicity=(
+            1, eq.NFP), grid=grid, weight=20),
+
+        AspectRatio(eq=eq, target=8, weight=100))
     )
 
     # NOTE: Values greater than k are given as constraints
-    R_modes = np.vstack(
+    R_modes = np.vstack((
         [0, 0, 0],
         eq.surface.R_basis.modes[
             np.max(np.abs(eq.surface.R_basis.modes), 1) > k, :
-        ],
+        ],)
     )
     Z_modes = eq.surface.Z_basis.modes[
         np.max(np.abs(eq.surface.Z_basis.modes), 1) > k, :
@@ -96,11 +110,13 @@ def run_qh_optimization(k, eq):
 
     optimizer = Optimizer('proximal-lsq-exact')
 
+    maxIter = 5 * (i + 1)
+
     eq_new, history = eq.optimize(
         objective=objective,
         constraints=constraints,
         optimizer=optimizer,
-        maxiter=20,
+        maxiter=maxIter,
         verbose=3,
         copy=True,
         options={
@@ -112,13 +128,13 @@ def run_qh_optimization(k, eq):
 
 
 grid = LinearGrid(
-    rho=0.8,
+    rho=1,
     theta=np.linspace(0, 2 * np.pi, 100),
     zeta=np.linspace(0, 2 * np.pi, 100),
     axis=True
 )
 eq_test = eq
-for i in range(0, 3):
+for i in range(1, 20):
     eq_test = run_qh_optimization(i, eq_test)
     fig = plot_3d(eq_test, "|F|", log=True, grid=grid)
     fig.write_image(f"improvement_{i}.png")
