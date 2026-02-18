@@ -5,7 +5,7 @@ import gc
 
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     del os.environ["CUDA_VISIBLE_DEVICES"]
-
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 from desc import set_device
 
@@ -25,21 +25,20 @@ except Exception as e:
 
 from qsc import Qsc
 from desc.equilibrium import Equilibrium
+from desc.geometry import FourierRZToroidalSurface
 from desc.io import hdf5Writer
 from desc.optimize import Optimizer
 from desc.plotting import plot_boozer_surface, plot_3d
 from desc.objectives import (
     ObjectiveFunction, QuasisymmetryTwoTerm, FixBoundaryZ,
     QuasisymmetryBoozer, AspectRatio, ForceBalance,
-    FixBoundaryR, FixPressure, FixCurrent, FixPsi,
+    FixBoundaryR, FixPressure, FixCurrent, FixPsi, Volume, RotationalTransform
 )
 
 from desc.plotting import LinearGrid
 import numpy as np
 
-NFPs = [2, 3, 4]
-scalingFactors = [0.03, 0.045, 0.06]
-r_vals = [0.25]  # 0.3, 0.35]
+test_results = []
 
 # TODO: Vary: Size (as discussed below), nfp, radius, etabar
 # NOTE:
@@ -49,123 +48,117 @@ r_vals = [0.25]  # 0.3, 0.35]
 #       - zs[1]: Gives Vertical height ofthe spiral (I think I should keep these the same but opposite)
 #       - Varying rc[1], zs[1], rc[0] should give ability to tune size
 
+IOTAs = [i / np.pi for i in range(1, 4)]
+ASPECT_RATIOs = [4, 5, 8]
+NFPs = [2, 3, 4]
 
-test_results = []
+for iota in IOTAs:
+    for aspectRatio in ASPECT_RATIOs:
+        for NFP in NFPs:
+            # stel = Qsc.from_paper("2022 QH nfp3 vacuum", nfp=NFP)
 
-for NFP in NFPs:
-    for scalingFactor in scalingFactors:
-        for r_val in r_vals:
-            stel = Qsc(rc=[1, scalingFactor], zs=[
-                0, -scalingFactor], nfp=NFP, etabar=-0.9)
+            # ntheta = 50
+            # eq_fixed_bdry = Equilibrium.from_near_axis(
+            #     stel,
+            #     r=0.10,
+            #     L=3,
+            #     M=4,
+            #     N=4,
+            #     ntheta=ntheta
+            # )
 
-            ntheta = 75
-            r = r_val
-            eq_fixed_bdry = Equilibrium.from_near_axis(
-                stel,
-                r=r,
-                L=3,
-                M=6,
-                N=6,
-                ntheta=ntheta
+            surf = FourierRZToroidalSurface(
+                R_lmn=[1, 0.125, 0.1],
+                Z_lmn=[-0.125, -0.1],
+                modes_R=[[0, 0], [1, 0], [0, 1]],
+                modes_Z=[[-1, 0], [0, -1]],
+                M=4,
+                N=4,
+                sym=True,
+                NFP=4
             )
 
-            eq = eq_fixed_bdry.copy()
-            print("Z-Basis Modes:", eq_fixed_bdry.surface.Z_basis.modes)
-
-            ASPECT_RATIO = eq_fixed_bdry.compute("R0/a")["R0/a"]
-
-            try:
-                vol = eq_fixed_bdry.compute("V")["V"]
-                if vol < 0 or np.isnan(vol):
-                    print(f"Skipping Invalid Geometry: NFP={
-                        NFP}, r={r_val}")
-                    continue  # Skip to next iteration
-            except:
-                continue
+            eq_fixed_bdry = Equilibrium(M=4, N=4, Psi=0.04, surface=surf)
 
             grid = LinearGrid(
-                L=6, N=12,
-                M=12,
+                rho=1,
+                theta=np.linspace(0, 2 * np.pi, 100),
+                zeta=np.linspace(0, 2 * np.pi, 100),
+                axis=True
+            )
+
+            VOLUME = eq_fixed_bdry.compute("V")["V"]
+            IOTAs = [i / np.pi for i in range(1, 4)]
+            ASPECT_RATIOs = []
+
+            grid = LinearGrid(
+                L=3, N=4,
+                M=4,
                 NFP=eq_fixed_bdry.NFP,
                 sym=eq_fixed_bdry.sym
             )
 
             grid_boozer = LinearGrid(
-                L=12,
-                N=24,
-                M=24,
+                L=3,
+                N=4,
+                M=4,
                 NFP=eq_fixed_bdry.NFP,
                 sym=False
             )
 
-            fixed_modes_R = np.array([
-                [0, 0],
-                [1, 0]
-            ])
+            eq = eq_fixed_bdry
+            for kp in range(1, 5):
 
-            fixed_modes_Z = np.array([
-                [-1, 0]
-            ])
-
-            constraints = (
-                FixPressure(eq=eq_fixed_bdry),
-                FixCurrent(eq=eq_fixed_bdry),
-                FixPsi(eq=eq_fixed_bdry),
-                FixBoundaryR(eq=eq_fixed_bdry, modes=fixed_modes_R),
-                FixBoundaryZ(eq=eq_fixed_bdry, modes=fixed_modes_Z)
-            )
-
-            optimizer = Optimizer('proximal-lsq-exact')
-            eq_fixed_bdry.optimize(
-                optimizer=optimizer,
-                verbose=3,
-                ftol=1e-3,
-                objective=ObjectiveFunction((
-                    AspectRatio(eq=eq_fixed_bdry, target=ASPECT_RATIO,
-                                grid=grid,  normalize=True, weight=10.0),
-                    QuasisymmetryTwoTerm(
-                        eq=eq_fixed_bdry, helicity=(1, NFP),  grid=grid,
-                        normalize=True, weight=20.0),
-                    ForceBalance(eq=eq_fixed_bdry, grid=grid,
-                                 normalize=True, weight=1.0)
+                R_modes = np.vstack((
+                    [0, 0, 0],
+                    eq.surface.R_basis.modes[
+                        np.max(np.abs(eq.surface.R_basis.modes), 1) > kp, :
+                    ])
                 )
-                ),
-                maxiter=500,
-                xtol=1e-4,
-                constraints=constraints
-            )
 
-            eq_fixed_bdry.optimize(
-                optimizer=optimizer,
-                verbose=3,
-                ftol=1e-5,
-                objective=ObjectiveFunction((
-                    AspectRatio(eq=eq_fixed_bdry, target=ASPECT_RATIO,
-                                grid=grid,  normalize=True, weight=10.0),
-                    QuasisymmetryBoozer(
-                        eq=eq_fixed_bdry, helicity=(1, NFP), grid=grid_boozer,
-                        normalize=True, weight=2.0),
+                Z_modes = eq.surface.Z_basis.modes[
+                    np.max(np.abs(eq.surface.Z_basis.modes), 1) > kp, :
+                ]
 
-                    ForceBalance(eq=eq_fixed_bdry, grid=grid,
-                                 normalize=True, weight=10.0)
+                constraints = (
+                    ForceBalance(eq=eq, grid=grid),
+                    FixPressure(eq=eq),
+                    FixCurrent(eq=eq),
+                    FixPsi(eq=eq),
+                    FixBoundaryR(eq=eq, modes=R_modes),
+                    FixBoundaryZ(eq=eq, modes=Z_modes),
                 )
-                ),
-                maxiter=500,
-                xtol=1e-5,
-                constraints=constraints
-            )
 
-            filename = f"solved_nfp{NFP}_r{
-                r_val:.2f}_scale{scalingFactor:.3f}"
-            hdf5Writer(f"./data/{filename}.h5", 'w').write_obj(eq_fixed_bdry)
+                optimizer = Optimizer('proximal-lsq-exact')
+                eq_fixed_bdry.optimize(
+                    optimizer=optimizer,
+                    verbose=3,
+                    ftol=1e-5,
+                    objective=ObjectiveFunction((
+
+                        AspectRatio(eq=eq, target=aspectRatio),
+                        QuasisymmetryBoozer(
+                            eq=eq, helicity=(1, NFP), grid=grid_boozer,
+                            normalize=True, weight=10.0),
+
+                        RotationalTransform(
+                            eq=eq_fixed_bdry, target=iota, weight=10,
+                            normalize=True)
+
+                    ),
+                    ),
+                    maxiter=20,
+                    xtol=1e-5,
+                    constraints=constraints
+                )
+
+            filename = f"solved_nfp{NFP}"
+            hdf5Writer(f"./data/{filename}.h5", 'w').write_obj(eq)
 
             test_results.append({
                 "nfp": NFP,
-                "excursion": scalingFactor,
-                "r": r_val,
-                "iota": eq_fixed_bdry.iota,
-                "aspect_ratio": ASPECT_RATIO,
-                "eq_object": eq_fixed_bdry
+                "iota": eq.iota,
+                "eq_object": eq
             })
             grid = LinearGrid(
                 rho=1,
@@ -174,7 +167,7 @@ for NFP in NFPs:
                 axis=True
             )
 
-            fig = plot_3d(eq_fixed_bdry, "|F|_normalized", log=True, grid=grid)
+            fig = plot_3d(eq, "|F|_normalized", log=True, grid=grid)
             fig.write_image(f"./image/{filename}.png")
-            fig, ax = plot_boozer_surface(eq_fixed_bdry)
+            fig, ax = plot_boozer_surface(eq)
             fig.savefig(f"./image/{filename}_boozer.png")
